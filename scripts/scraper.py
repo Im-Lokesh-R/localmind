@@ -1,54 +1,44 @@
+## File Name: scraper.py
+## Description: Fetches and cleans text content from a given URL
+## Path: scripts/scraper.py
+## Created By: Lokesh R     Created On: 2026-05-19
+
+## Import - Libraries
 import requests
-
-def search_wikipedia(query):
-    formatted_query = query.replace(" ","_")
-
-    url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{formatted_query}"
-
-    headers ={
-        "User-Agent":"LocalMind/1.0 (lokeshrmt09.mt10@gmail.com)"
-    }
-
-    response = requests.get(url,headers=headers)
+from bs4 import BeautifulSoup
 
 
-    if response.status_code!=200:
-        return f"Error : WiKipedia returns {response.status_code}"
-    data = response.json()
-
-    clean_text = data["extract"]
-
-    return clean_text
-
-def ask_localmind(query):
-    print(f"Searching wiki for {query}")
-    context = search_wikipedia(query)
-
-    prompt = f"""You are a research assistant.
-    Only use the context below to answer the question.
-    Do not add anything from your own knowledge.
-
-    Context:
-    {context}
-
-    Question:
-    {query}
-
-    Answer in clear simple language:"""
-
-    print("Sending to Mistral...")
-    response = requests.post(
-        "http://localhost:11434/api/generate",
-        json={
-            "model": "mistral",
-            "prompt": prompt,
-            "stream": False
+def scrape_text(url):
+    try:
+        ## fetch the page
+        headers = {
+            "User-Agent": "LocalMind/1.0 (your@email.com)"
         }
-    )
+        response = requests.get(url, headers=headers, timeout=5)
 
-    return response.json()["response"]
+        ## check if request was successful
+        if response.status_code != 200:
+            return ""
 
+        ## parse the HTML
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        ## extract only paragraph text
+        paragraphs = soup.find_all("p")
+
+        ## join all paragraphs into one clean text
+        clean_text = " ".join([p.get_text() for p in paragraphs])
+
+        ## return first 2000 words only
+        words = clean_text.split()
+        return " ".join(words[:2000])
+
+    except Exception as e:
+        ## if any site fails just skip it
+        return ""
+
+
+## Test it
 if __name__ == "__main__":
-    answer = ask_localmind("What is the Hantavirus?")
-    print("\n--- LocalMind Answer ---")
-    print(answer)
+    text = scrape_text("https://en.wikipedia.org/wiki/Black_hole")
+    print(text[:500])
