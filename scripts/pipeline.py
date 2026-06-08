@@ -1,87 +1,220 @@
 ## File Name: pipeline.py
-## Description: Main pipeline - search, scrape and generate answer using Mistral
+## Description: Main pipeline - RSS routing + sequential scrape and chunk streaming
 ## Path: scripts/pipeline.py
 ## Created By: Lokesh R     Created On: 2026-05-19
+## Updated By: Lokesh R     Updated On: 2026-05-27
+## Added RSS router, relevance check, chunk streaming
 
 ## Import - Libraries
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
 
 ## Import - Application Program Files
 from search import search_links
 from scraper import scrape_text
+from router import get_context
 
-## max links to scrape (can be changed via /links command)
 MAX_LINKS = 5
+CHUNK_SIZE = 1500
 
-def ask_localmind(query, max_links=MAX_LINKS, progress_callback=None):
+def chunk_text(text):
+    ## split text into chunks of CHUNK_SIZE characters word by word
+    words = text.split()
+    chunks = []
+    current = []
+    current_len = 0
 
-    ## step 1: find top links using DuckDuckGo
+    for word in words:
+        current_len += len(word) + 1
+        current.append(word)
+        if current_len >= CHUNK_SIZE:
+            chunks.append(" ".join(current))
+            current = []
+            current_len = 0
+
+    if current:
+        chunks.append(" ".join(current))
+
+    return chunks
+
+def is_relevant(chunk, query):
+    ## quick keyword check before sending chunk to Mistral
+    query_words = set(query.lower().split())
+
+    ## remove common words that appear everywhere
+    stop_words = {"what", "is", "the", "a", "an", "of", "in", "on", "for",
+                  "to", "and", "or", "how", "why", "who", "when", "where",
+                  "list", "tell", "me", "about", "today", "latest", "news"}
+
+    query_words = query_words - stop_words
+    chunk_lower = chunk.lower()
+
+    ## need at least 2 query keywords in the chunk
+    matches = sum(1 for word in query_words if word in chunk_lower)
+    return matches >= 2
+
+def stream_to_mistral(prompt, chunk_callback, chunk_id, label, stop_flag, model="mistral:latest"):
+    ## shared function to stream any prompt to Mistral
+    answer = ""
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": True,
+                "keep_alive": -1,
+                "options": {
+                    "num_predict": 512,
+                    "temperature": 0.3,
+                    "num_ctx": 2048
+                }
+            },
+            stream=True
+        )
+
+        for line in response.iter_lines():
+            if stop_flag and stop_flag():
+                break
+            if line:
+                data = json.loads(line.decode("utf-8"))
+                token = data.get("response", "")
+                answer += token
+
+                if chunk_callback and chunk_id:
+                    chunk_callback("token", {
+                        "id": chunk_id,
+                        "text": label + answer
+                    })
+
+                if data.get("done"):
+                    break
+
+    except Exception as e:
+        if chunk_callback:
+            chunk_callback("token", {
+                "id": chunk_id,
+                "text": label + f"[bold red]Error: {e}[/bold red]"
+            })
+
+    return answer
+
+def ask_localmind(query, max_links=MAX_LINKS, progress_callback=None, chunk_callback=None, stop_flag=None, model="mistral:latest"):
+    context, category = get_context(query, progress_callback=progress_callback)
+
+    if context:
+        ## RSS route — fast, reliable, no scraping needed
+        if progress_callback:
+            progress_callback(
+                f"[dim cyan]📡 {category.upper()} query detected — using RSS feeds...[/dim cyan]"
+            )
+
+        label = f"[bold cyan]LocalMind[/bold cyan] [dim](via {category} RSS):[/dim] "
+        chunk_id = None
+
+        if chunk_callback:
+            chunk_id = chunk_callback("start", label)
+
+        prompt = f"""You are a research assistant.
+Based ONLY on the RSS feed data below, answer the question clearly and in detail.
+Include dates, sources and headlines where available.
+Do not add anything from your own knowledge.
+
+RSS Data:
+{context[:4000]}
+
+Question: {query}
+
+Answer:"""
+
+        stream_to_mistral(prompt, chunk_callback, chunk_id, label, stop_flag, model)
+        ## return empty sources since RSS has inline source labels
+        return []
+
+    ## ── step 1: general query — use DuckDuckGo pipeline ────────────────
+    if progress_callback:
+        progress_callback("[dim cyan]🌐 General query — searching the web...[/dim cyan]")
+
     links = search_links(query, max_results=max_links)
 
-    ## step 2: scrape all links in parallel using threads
-    all_text = ""
-    sources = []
-
-    def fetch(link):
+    if not links:
         if progress_callback:
-            progress_callback(f"  → visiting {link['url'][:60]}...")
-        text = scrape_text(link["url"])
-        if progress_callback and text:
-            progress_callback(f"  ✓ scraped {link['title'][:40]}")
-        return link, text
-
-    with ThreadPoolExecutor(max_workers=max_links) as executor:
-        futures = {executor.submit(fetch, link): link for link in links}
-        for future in as_completed(futures):
-            link, text = future.result()
-            if text:
-                all_text += f"\n\n--- Source: {link['title']} ---\n{text}"
-                sources.append(link["title"])
-                sources.append(link["url"])
-
-    ## step 3: estimate response time based on context size
-    word_count = len(all_text.split())
-    estimated_seconds = round((word_count / 500) * 12)
+            progress_callback("[bold red]No results found from DuckDuckGo[/bold red]")
+        return []
 
     if progress_callback:
-        progress_callback(f"📊 Context: {word_count} words scraped from {len(sources) // 2} sources")
-        progress_callback(f"⏳ Estimated response time: ~{estimated_seconds}s")
-        progress_callback(f"🤖 Generating detailed answer...")
+        progress_callback(f"[dim]✓ Found {len(links)} links — scraping now...[/dim]")
 
-    ## step 4: build the prompt
+    sources = []
 
-    prompt = f"""You are a detailed research assistant.
-Your job is to organize and present ALL the information from the sources below in a clear, structured, and comprehensive way.
-Do NOT summarize or shorten the content.
-Present everything in full detail with proper headings and structure.
-Only use the context provided — do not add your own knowledge.
+    ## ── step 2: one site at a time ──────────────────────────────────────
+    for site_index, link in enumerate(links):
 
-Context:
-{all_text[:8000]}
+        if stop_flag and stop_flag():
+            break
 
-Question:
-{query}
+        if progress_callback:
+            progress_callback(
+                f"[dim]→ [{site_index+1}/{len(links)}] visiting {link['url'][:60]}...[/dim]"
+            )
 
-Give a detailed, well organized, comprehensive answer:"""
+        text = scrape_text(link["url"])
 
-    ## step 5: send to Mistral
-    response = requests.post(
-        "http://localhost:11434/api/generate",
-        json={
-            "model": "mistral",
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "num_predict": 2048,
-                "temperature": 0.3
-            }
-        }
-    )
+        if not text:
+            if progress_callback:
+                progress_callback(
+                    f"[dim red]  ✗ could not scrape {link['title'][:40]}[/dim red]"
+                )
+            continue
 
-    result = response.json()
+        sources.append(link["title"])
+        sources.append(link["url"])
 
-    if "error" in result:
-        return f"Error: {result['error']}", [], estimated_seconds
+        chunks = chunk_text(text)
 
-    return result["response"], sources, estimated_seconds
+        if progress_callback:
+            progress_callback(
+                f"[dim green]  ✓ scraped {link['title'][:40]} → {len(chunks)} chunks[/dim green]"
+            )
+
+        ## ── step 3: feed each relevant chunk ────────────────────────────
+        for chunk_index, chunk in enumerate(chunks):
+
+            if stop_flag and stop_flag():
+                break
+
+            ## relevance check — skip irrelevant chunks
+            if not is_relevant(chunk, query):
+                if progress_callback:
+                    progress_callback(
+                        f"[dim]  ⏭ skipping chunk {chunk_index+1}/{len(chunks)} — not relevant[/dim]"
+                    )
+                continue
+
+            if progress_callback:
+                progress_callback(
+                    f"[dim]  📤 feeding chunk {chunk_index+1}/{len(chunks)} from {link['title'][:30]}...[/dim]"
+                )
+
+            label = f"[bold cyan]LocalMind[/bold cyan] [dim]({link['title'][:25]} · chunk {chunk_index+1}/{len(chunks)}):[/dim] "
+
+            chunk_id = None
+            if chunk_callback:
+                chunk_id = chunk_callback("start", label)
+
+            prompt = f"""You are a research assistant analyzing a piece of text.
+This is chunk {chunk_index+1} of {len(chunks)} from the source "{link['title']}".
+Based ONLY on the text below, answer the question clearly and in detail.
+Do not add anything from your own knowledge.
+If this chunk does not contain relevant information, say "No relevant info in this chunk."
+
+Text:
+{chunk}
+
+Question: {query}
+
+Answer:"""
+
+            stream_to_mistral(prompt, chunk_callback, chunk_id, label, stop_flag)
+
+    return sources
