@@ -12,18 +12,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 RSS_SOURCES = {
     "news": [
-        {"name": "Times of India",  "url": "https://timesofindia.indiatimes.com/rssfeedstopstories.cms"},
-        {"name": "NDTV",            "url": "https://feeds.feedburner.com/ndtvnews-top-stories"},
-        {"name": "The Hindu",       "url": "https://www.thehindu.com/news/feeder/default.rss"},
-        {"name": "BBC News India",  "url": "http://feeds.bbci.co.uk/news/world/asia/india/rss.xml"},
-        {"name": "India Today",     "url": "https://www.indiatoday.in/rss/home"},
+        {"name": "BBC World", "url": "http://feeds.bbci.co.uk/news/rss.xml"},
+        {"name": "Reuters", "url": "https://feeds.reuters.com/reuters/topNews"},
+        {"name": "Times of India", "url": "https://timesofindia.indiatimes.com/rssfeedstopstories.cms"},
+        {"name": "NDTV", "url": "https://feeds.feedburner.com/ndtvnews-top-stories"},
+        {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
     ],
     "sports": [
-        {"name": "ESPNcricinfo",    "url": "https://www.espncricinfo.com/rss/content/story/feeds/0.xml"},
-        {"name": "BBC Sport",       "url": "http://feeds.bbci.co.uk/sport/rss.xml"},
-        {"name": "Sportskeeda",     "url": "https://www.sportskeeda.com/feed"},
-        {"name": "NDTV Sports",     "url": "https://feeds.feedburner.com/ndtvsports-latest"},
-        {"name": "Cricbuzz",        "url": "https://www.cricbuzz.com/cricket-news/cricket-rss-feeds"},
+        {"name": "ESPN", "url": "https://www.espn.com/espn/rss/news"},
+        {"name": "ESPNcricinfo", "url": "https://www.espncricinfo.com/rss/content/story/feeds/0.xml"},
+        {"name": "BBC Sport", "url": "http://feeds.bbci.co.uk/sport/rss.xml"},
+        {"name": "Sportskeeda", "url": "https://www.sportskeeda.com/feed"},
+        {"name": "Goal.com", "url": "https://www.goal.com/feeds/en/news"},
     ],
     "tech": [
         {"name": "Hacker News",     "url": "https://news.ycombinator.com/rss"},
@@ -47,9 +47,9 @@ CATEGORY_KEYWORDS = {
     "news": ["news", "today", "breaking", "latest", "headline", "update",
              "current", "event", "happen", "report", "2026"],
     "sports": ["cricket", "football", "ipl", "match", "score", "team",
-               "player", "tournament", "sport", "fifa", "nba", "tennis",
-               "yesterday", "won", "win", "lost", "league", "rcb", "csk",
-               "mi", "kkr", "gt", "srh", "dc", "lsg", "pbks", "rr"],
+           "player", "tournament", "sport", "fifa", "world cup", "nba",
+           "tennis", "yesterday", "won", "win", "lost", "league",
+           "rcb", "csk", "mi", "kkr", "gt", "srh", "dc", "lsg", "pbks", "rr"],
     "tech": ["code", "coding", "programming", "software", "hardware", "ai",
              "tech", "developer", "python", "javascript", "startup", "app"],
     "science": ["science", "research", "study", "space", "nasa", "discovery",
@@ -122,7 +122,7 @@ def fetch_single_feed(feed, query, progress_callback=None):
 
             ## quick title relevance check first
             combined = f"{title} {summary}"
-            if not tfidf_relevance(combined, query, threshold=0.05):
+            if not tfidf_relevance(combined, query, threshold=0.15):
                 continue
 
             ## scrape article for more content

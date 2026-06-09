@@ -1,14 +1,15 @@
 ## File Name: localmind.py
-## Description: LocalMind TUI - Interactive Terminal UI with model selector
+## Description: LocalMind TUI - Interactive Terminal UI with model selector and chat memory
 ## Path: localmind.py
 ## Created By: Lokesh R     Created On: 2026-05-25
 ## Updated By: Lokesh R     Updated On: 2026-06-02
-## Fixed / menu bug, model selector working correctly
+## Added chat memory, new chat, history commands
 
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "scripts"))
 
+from memory import save_message, build_context, new_session, list_sessions
 from textual.app import App, ComposeResult
 from textual.widgets import Input, Footer, Label, OptionList, Static
 from textual.widgets.option_list import Option
@@ -19,8 +20,6 @@ import threading
 import time
 import requests
 import json
-
-## ── model utilities ──────────────────────────────────────────────────────
 
 def get_installed_models():
     try:
@@ -43,11 +42,25 @@ def get_installed_models():
     except:
         return []
 
+def build_local_prompt(query, history, model):
+    model_lower = model.lower()
+    if "tinyllama" in model_lower or ":1b" in model_lower:
+        if history:
+            return f"{history}\nQ: {query}\nA:"
+        return f"Q: {query}\nA:"
+    elif any(x in model_lower for x in ["3b", "phi", "gemma"]):
+        if history:
+            return f"{history}\nUser: {query}\nAssistant:"
+        return f"User: {query}\nAssistant:"
+    else:
+        if history:
+            return f"{history}\nUser: {query}\nLocalMind:"
+        return query
+
 class LocalMind(App):
 
     CSS = """
     Screen { background: #0a0a0a; }
-
     #logo {
         content-align: center middle;
         text-align: center;
@@ -55,7 +68,6 @@ class LocalMind(App):
         padding: 1 0;
         height: 3;
     }
-
     #chat-scroll {
         height: 1fr;
         border: solid #1E2761;
@@ -63,39 +75,32 @@ class LocalMind(App):
         padding: 1;
         overflow-y: auto;
     }
-
     .message { padding: 0 1; margin-bottom: 1; }
-
     #input-container {
         height: auto;
         margin: 1 1;
         border: solid #028090;
         padding: 0 1;
     }
-
     #query { background: #0a0a0a; color: white; border: none; }
-
     #status {
         text-align: center;
         color: #028090;
         height: 1;
         margin: 0 1;
     }
-
     #command-menu {
         display: none;
         position: absolute;
         width: 70%;
         height: auto;
-        max-height: 16;
+        max-height: 20;
         margin: 0 1;
         border: solid #028090;
         background: #111111;
         layer: above;
     }
-
     #command-menu.visible { display: block; }
-
     #model-menu {
         display: none;
         position: absolute;
@@ -107,7 +112,6 @@ class LocalMind(App):
         background: #111111;
         layer: above;
     }
-
     #model-menu.visible { display: block; }
     """
 
@@ -119,6 +123,7 @@ class LocalMind(App):
 
     def __init__(self):
         super().__init__()
+        self.session_id = new_session()
         self.web_search = False
         self.max_links = 5
         self.is_generating = False
@@ -149,8 +154,10 @@ class LocalMind(App):
             Option("/web       — Enable web search", id="web"),
             Option("/local     — Switch to local mode", id="local"),
             Option("/models    — Select AI model", id="models"),
+            Option("/new       — Start new chat", id="new"),
+            Option("/history   — Show past chats", id="history"),
             Option("/links     — Set number of sites to search", id="links"),
-            Option("/clear     — Clear chat", id="clear"),
+            Option("/clear     — Clear screen", id="clear"),
             Option("/exit      — Exit LocalMind", id="exit"),
             id="command-menu"
         )
@@ -179,32 +186,25 @@ class LocalMind(App):
     def _update_status(self):
         mode = "Web search ON" if self.web_search else "Local mode"
         self.query_one("#status", Label).update(
-            f"● {mode}  |  model: {self.current_model}  |  type / for commands  |  ctrl+s stop  |  ctrl+c quit"
+            f"● {mode}  |  model: {self.current_model}  |  session: {self.session_id}  |  type / for commands  |  ctrl+s stop  |  ctrl+c quit"
         )
 
     def _show_model_menu(self):
         self._showing_model_menu = True
         menu = self.query_one("#model-menu", OptionList)
         menu.clear_options()
-
         if not self.installed_models:
-            self._add_message_main(
-                "[bold red]No models found. Run: ollama pull mistral[/bold red]"
-            )
+            self._add_message_main("[bold red]No models found. Run: ollama pull mistral[/bold red]")
             self._showing_model_menu = False
             return
-
         for m in self.installed_models:
             prefix = "● " if m["name"] == self.current_model else "  "
             display = f"{prefix}{m['name']}  —  {m['param']} · {m['quant']} · {m['size_gb']}GB · ~{m['ram_needed']}GB RAM"
             menu.add_option(Option(display, id=f"model__{m['name']}"))
-
         menu.add_option(Option("  ── cancel ──", id="model__cancel"))
         self.query_one("#command-menu", OptionList).remove_class("visible")
         menu.add_class("visible")
         menu.focus()
-
-    ## ── helpers ──────────────────────────────────────────────────────────
 
     def _add_message_main(self, text, markup=True):
         self._current_msg_id += 1
@@ -223,17 +223,12 @@ class LocalMind(App):
         except:
             pass
 
-    ## ── events ───────────────────────────────────────────────────────────
-
     def on_input_changed(self, event: Input.Changed):
-        ## hide model menu when typing
         if self._showing_model_menu:
             return
-
         cmd_menu = self.query_one("#command-menu", OptionList)
         model_menu = self.query_one("#model-menu", OptionList)
         model_menu.remove_class("visible")
-
         if event.value == "/":
             cmd_menu.add_class("visible")
             cmd_menu.focus()
@@ -243,20 +238,16 @@ class LocalMind(App):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected):
         option_id = event.option.id
 
-        ## ── model menu selection ──────────────────────────────────────
         if event.option_list.id == "model-menu":
             self._showing_model_menu = False
             self.query_one("#model-menu", OptionList).remove_class("visible")
             self.query_one("#query").value = ""
             self.query_one("#query").focus()
-
             selected_model = option_id.replace("model__", "")
             if selected_model == "cancel":
                 return
-
             self.current_model = selected_model
             self._update_status()
-
             for m in self.installed_models:
                 if m["name"] == selected_model:
                     self._add_message_main(
@@ -266,7 +257,6 @@ class LocalMind(App):
                     break
             return
 
-        ## ── command menu selection ────────────────────────────────────
         self.query_one("#command-menu", OptionList).remove_class("visible")
         self.query_one("#query").value = ""
         self.query_one("#query").focus()
@@ -283,6 +273,26 @@ class LocalMind(App):
 
         elif option_id == "models":
             self._show_model_menu()
+
+        elif option_id == "new":
+            self.session_id = new_session()
+            self._update_status()
+            scroll = self.query_one("#chat-scroll", ScrollableContainer)
+            scroll.remove_children()
+            scroll.mount(Static(
+                f"[bold cyan]LocalMind[/bold cyan] [dim]— new chat started ({self.session_id})[/dim]",
+                classes="message", markup=True
+            ))
+
+        elif option_id == "history":
+            sessions = list_sessions()
+            if not sessions:
+                self._add_message_main("[dim]No previous chats found[/dim]")
+            else:
+                history_text = "\n[bold blue]Past Chats:[/bold blue]\n"
+                for s in sessions[:5]:
+                    history_text += f"  [cyan]{s['_id']}[/cyan] — {str(s['first_message'])[:50]}\n"
+                self._add_message_main(history_text)
 
         elif option_id == "links":
             self._add_message_main(
@@ -316,11 +326,9 @@ class LocalMind(App):
     def on_input_submitted(self, event: Input.Submitted):
         if self.is_generating:
             return
-
         query = event.value.strip()
         if not query or query == "/":
             return
-
         self.query_one("#query").value = ""
 
         if query.startswith("/links "):
@@ -329,13 +337,9 @@ class LocalMind(App):
                 if 1 <= n <= 10:
                     self.max_links = n
                     self._update_status()
-                    self._add_message_main(
-                        f"[bold green]✓ Will search top {n} sites[/bold green]"
-                    )
+                    self._add_message_main(f"[bold green]✓ Will search top {n} sites[/bold green]")
                 else:
-                    self._add_message_main(
-                        "[bold red]Please enter a number between 1 and 10[/bold red]"
-                    )
+                    self._add_message_main("[bold red]Please enter a number between 1 and 10[/bold red]")
             except:
                 self._add_message_main("[bold red]Usage: /links 3[/bold red]")
             return
@@ -347,12 +351,11 @@ class LocalMind(App):
         else:
             threading.Thread(target=self.run_local, args=(query,), daemon=True).start()
 
-    ## ── background workers ───────────────────────────────────────────────
-
     def run_search(self, query):
+        save_message(self.session_id, "user", query)
         self.is_generating = True
         self.stop_flag = False
-        start = time.time()
+        total_start = time.time()
 
         def progress(msg):
             self.call_from_thread(self._add_message_main, msg)
@@ -378,15 +381,18 @@ class LocalMind(App):
             model=self.current_model
         )
 
-        elapsed = round(time.time() - start, 1)
-        self.call_from_thread(self._add_message_main, f"[dim]⏱ Total: {elapsed}s[/dim]")
+        total_elapsed = round(time.time() - total_start, 1)
+        self.call_from_thread(
+            self._add_message_main,
+            f"[dim]⏱ Total: {total_elapsed}s (includes search + scraping + generation)[/dim]"
+        )
 
         if sources:
             src_text = "\n[bold blue]Sources:[/bold blue]\n"
             seen = set()
             count = 1
             for i in range(0, len(sources), 2):
-                url = sources[i+1] if i+1 < len(sources) else ""
+                url = sources[i + 1] if i + 1 < len(sources) else ""
                 title = sources[i]
                 if url not in seen:
                     seen.add(url)
@@ -397,6 +403,12 @@ class LocalMind(App):
         self.is_generating = False
 
     def run_local(self, query):
+        ## get conversation history for context
+        history = build_context(self.session_id)
+
+        ## save user message
+        save_message(self.session_id, "user", query)
+
         self.is_generating = True
         self.stop_flag = False
         start = time.time()
@@ -411,12 +423,14 @@ class LocalMind(App):
             self._add_message_main, "[bold cyan]LocalMind:[/bold cyan] "
         )
 
+        ## build prompt with history
+        full_prompt = build_local_prompt(query, history, self.current_model)
         try:
             response = requests.post(
                 "http://localhost:11434/api/generate",
                 json={
                     "model": self.current_model,
-                    "prompt": query,
+                    "prompt": full_prompt,
                     "stream": True,
                     "keep_alive": -1,
                     "options": {
@@ -447,6 +461,10 @@ class LocalMind(App):
             self.call_from_thread(
                 self._add_message_main, f"[bold red]Error: {e}[/bold red]"
             )
+
+        ## save assistant answer to memory
+        if answer:
+            save_message(self.session_id, "assistant", answer)
 
         elapsed = round(time.time() - start, 1)
         self.call_from_thread(self._add_message_main, f"[dim]⏱ {elapsed}s[/dim]")
