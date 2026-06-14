@@ -1,45 +1,36 @@
 ## File Name: router.py
-## Description: RSS routing with per-feed progress and DuckDuckGo fallback
+## Description: Smart source routing using trusted domains + DuckDuckGo
 ## Path: scripts/router.py
 ## Created By: Lokesh R     Created On: 2026-05-27
-## Updated By: Lokesh R     Updated On: 2026-05-27
+## Updated By: Lokesh R     Updated On: 2026-06-09
+## Dynamic site-targeted search, parallel fetching, result-specific targeting
 
 ## Import - Libraries
-import feedparser
 import requests
 from bs4 import BeautifulSoup
+from ddgs import DDGS
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-RSS_SOURCES = {
+TRUSTED_SOURCES = {
     "news": [
-        {"name": "BBC World", "url": "http://feeds.bbci.co.uk/news/rss.xml"},
-        {"name": "Reuters", "url": "https://feeds.reuters.com/reuters/topNews"},
-        {"name": "Times of India", "url": "https://timesofindia.indiatimes.com/rssfeedstopstories.cms"},
-        {"name": "NDTV", "url": "https://feeds.feedburner.com/ndtvnews-top-stories"},
-        {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
+        "bbc.com", "reuters.com", "ndtv.com",
+        "thehindu.com", "timesofindia.com", "aljazeera.com"
     ],
     "sports": [
-        {"name": "ESPN", "url": "https://www.espn.com/espn/rss/news"},
-        {"name": "ESPNcricinfo", "url": "https://www.espncricinfo.com/rss/content/story/feeds/0.xml"},
-        {"name": "BBC Sport", "url": "http://feeds.bbci.co.uk/sport/rss.xml"},
-        {"name": "Sportskeeda", "url": "https://www.sportskeeda.com/feed"},
-        {"name": "Goal.com", "url": "https://www.goal.com/feeds/en/news"},
+        "espn.com", "bbc.com/sport", "cricbuzz.com",
+        "espncricinfo.com", "goal.com", "sportskeeda.com"
     ],
     "tech": [
-        {"name": "Hacker News",     "url": "https://news.ycombinator.com/rss"},
-        {"name": "TechCrunch",      "url": "https://techcrunch.com/feed/"},
-        {"name": "The Verge",       "url": "https://www.theverge.com/rss/index.xml"},
-        {"name": "Dev.to",          "url": "https://dev.to/feed"},
+        "techcrunch.com", "theverge.com",
+        "wired.com", "arstechnica.com", "dev.to"
     ],
     "science": [
-        {"name": "NASA",            "url": "https://www.nasa.gov/rss/dyn/breaking_news.rss"},
-        {"name": "Science Daily",   "url": "https://www.sciencedaily.com/rss/all.xml"},
-        {"name": "New Scientist",   "url": "https://www.newscientist.com/feed/home/"},
+        "nasa.gov", "sciencedaily.com",
+        "newscientist.com", "nature.com"
     ],
     "finance": [
-        {"name": "Moneycontrol",    "url": "https://www.moneycontrol.com/rss/latestnews.xml"},
-        {"name": "Economic Times",  "url": "https://economictimes.indiatimes.com/rssfeedstopstories.cms"},
-        {"name": "Yahoo Finance",   "url": "https://finance.yahoo.com/news/rssindex"},
+        "moneycontrol.com", "economictimes.indiatimes.com",
+        "bloomberg.com", "finance.yahoo.com"
     ],
 }
 
@@ -47,9 +38,9 @@ CATEGORY_KEYWORDS = {
     "news": ["news", "today", "breaking", "latest", "headline", "update",
              "current", "event", "happen", "report", "2026"],
     "sports": ["cricket", "football", "ipl", "match", "score", "team",
-           "player", "tournament", "sport", "fifa", "world cup", "nba",
-           "tennis", "yesterday", "won", "win", "lost", "league",
-           "rcb", "csk", "mi", "kkr", "gt", "srh", "dc", "lsg", "pbks", "rr"],
+               "player", "tournament", "sport", "fifa", "world cup", "nba",
+               "tennis", "yesterday", "won", "win", "lost", "league",
+               "rcb", "csk", "mi", "kkr", "gt", "srh", "dc", "lsg", "pbks", "rr"],
     "tech": ["code", "coding", "programming", "software", "hardware", "ai",
              "tech", "developer", "python", "javascript", "startup", "app"],
     "science": ["science", "research", "study", "space", "nasa", "discovery",
@@ -69,84 +60,62 @@ def detect_category(query):
         return "general"
     return max(scores, key=scores.get)
 
-def tfidf_relevance(text, query, threshold=0.1):
-    ## lightweight TF-IDF relevance check using sklearn
+def enhance_query(query):
+    ## add result-specific terms to improve targeting
+    query_lower = query.lower()
+    if any(w in query_lower for w in ["result", "match", "score", "won", "winner", "happened"]):
+        return f"{query} results scores"
+    if any(w in query_lower for w in ["latest", "today", "now", "current", "so far"]):
+        return f"{query} 2026 latest"
+    return query
+
+def search_trusted_source(query, domain, max_results=2):
+    ## search DuckDuckGo targeting a specific trusted domain
+    results = []
     try:
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        from sklearn.metrics.pairwise import cosine_similarity
-        import numpy as np
-
-        if not text or not query:
-            return False
-
-        vectorizer = TfidfVectorizer(stop_words="english")
-        tfidf = vectorizer.fit_transform([text, query])
-        score = cosine_similarity(tfidf[0:1], tfidf[1:2])[0][0]
-        return score >= threshold
+        enhanced = enhance_query(query)
+        with DDGS() as ddgs:
+            for r in ddgs.text(f"{enhanced} site:{domain}", max_results=max_results):
+                results.append({
+                    "title": r["title"],
+                    "url": r["href"],
+                    "snippet": r["body"]
+                })
     except:
-        ## fallback to keyword check if sklearn fails
-        query_words = set(query.lower().split()) - {
-            "what", "is", "the", "a", "an", "of", "in", "on",
-            "for", "to", "and", "or", "how", "why", "who", "when", "where"
-        }
-        return sum(1 for w in query_words if w in text.lower()) >= 2
+        pass
+    return results
 
-def scrape_article(url, max_words=400):
+def scrape_article(url, max_words=500):
     try:
         headers = {"User-Agent": "LocalMind/1.0 (lokesh@student.unom.ac.in)"}
         response = requests.get(url, headers=headers, timeout=5)
         if response.status_code != 200:
             return ""
         soup = BeautifulSoup(response.text, "html.parser")
-        paragraphs = soup.find_all("p")
-        text = " ".join([p.get_text() for p in paragraphs])
+
+        for tag in soup(["nav", "footer", "header", "script",
+                         "style", "aside", "form", "button", "iframe"]):
+            tag.decompose()
+
+        article = soup.find("article")
+        if article:
+            text = article.get_text(separator=" ")
+        else:
+            main = (soup.find("main") or
+                    soup.find(id="content") or
+                    soup.find(class_="content") or
+                    soup.find(class_="article-body"))
+            if main:
+                text = main.get_text(separator=" ")
+            else:
+                paragraphs = soup.find_all("p")
+                text = " ".join([p.get_text() for p in paragraphs])
+
+        text = " ".join(text.split())
         words = text.split()
         return " ".join(words[:max_words])
     except:
         return ""
-
-def fetch_single_feed(feed, query, progress_callback=None):
-    ## fetch one feed and check relevance per item
-    relevant_items = []
-    try:
-        if progress_callback:
-            progress_callback(f"[dim]  📡 checking {feed['name']}...[/dim]")
-
-        parsed = feedparser.parse(feed["url"])
-
-        for entry in parsed.entries[:5]:
-            title = entry.get("title", "")
-            summary = entry.get("summary", entry.get("description", ""))
-            link = entry.get("link", "")
-            published = entry.get("published", "")
-
-            ## quick title relevance check first
-            combined = f"{title} {summary}"
-            if not tfidf_relevance(combined, query, threshold=0.15):
-                continue
-
-            ## scrape article for more content
-            article_text = scrape_article(link) if link else ""
-
-            if progress_callback:
-                progress_callback(
-                    f"[dim green]  ✓ relevant: {title[:50]}[/dim green]"
-                )
-
-            relevant_items.append({
-                "source": feed["name"],
-                "title": title,
-                "summary": summary[:300] if summary else "",
-                "article": article_text,
-                "link": link,
-                "published": published
-            })
-
-    except Exception as e:
-        if progress_callback:
-            progress_callback(f"[dim red]  ✗ {feed['name']} failed: {e}[/dim red]")
-
-    return relevant_items
 
 def get_context(query, progress_callback=None):
     category = detect_category(query)
@@ -154,39 +123,57 @@ def get_context(query, progress_callback=None):
     if category == "general":
         return None, category
 
-    feeds = RSS_SOURCES.get(category, [])
+    domains = TRUSTED_SOURCES.get(category, [])
 
     if progress_callback:
         progress_callback(
-            f"[dim cyan]📡 {category.upper()} detected — checking {len(feeds)} RSS feeds...[/dim cyan]"
+            f"[dim cyan]📡 {category.upper()} detected — searching {len(domains)} trusted sources...[/dim cyan]"
         )
 
     all_items = []
 
-    ## check feeds one by one and collect relevant items
-    for feed in feeds:
-        items = fetch_single_feed(feed, query, progress_callback)
-        all_items.extend(items)
+    def fetch_domain(domain):
+        results = search_trusted_source(query, domain, max_results=2)
+        items = []
+        for r in results:
+            article_text = scrape_article(r["url"])
+            items.append({
+                "source": domain,
+                "title": r["title"],
+                "snippet": r["snippet"],
+                "article": article_text,
+                "url": r["url"]
+            })
+        return domain, items
+
+    ## search all domains in parallel
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(fetch_domain, d): d for d in domains[:3]}
+        for future in as_completed(futures):
+            domain, items = future.result()
+            if items and progress_callback:
+                for item in items:
+                    progress_callback(
+                        f"[dim green]  ✓ found: {item['title'][:50]}[/dim green]"
+                    )
+            all_items.extend(items)
 
     if not all_items:
-        ## no relevant content found in any RSS feed
         if progress_callback:
             progress_callback(
-                f"[dim yellow]⚠ No relevant content in RSS feeds — falling back to web search...[/dim yellow]"
+                "[dim yellow]⚠ No content from trusted sources — falling back to web search...[/dim yellow]"
             )
-        return None, "general"  ## return general so pipeline falls back to DuckDuckGo
+        return None, "general"
 
     ## format context
     context = f"Category: {category.upper()}\nQuery: {query}\n\n"
     for item in all_items:
         context += f"--- {item['source']} ---\n"
         context += f"Title: {item['title']}\n"
-        if item['published']:
-            context += f"Date: {item['published']}\n"
-        if item['summary']:
-            context += f"Summary: {item['summary']}\n"
+        if item['snippet']:
+            context += f"Snippet: {item['snippet']}\n"
         if item['article']:
             context += f"Article: {item['article']}\n"
-        context += f"Link: {item['link']}\n\n"
+        context += f"URL: {item['url']}\n\n"
 
     return context, category

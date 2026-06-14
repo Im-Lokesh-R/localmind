@@ -403,12 +403,8 @@ class LocalMind(App):
         self.is_generating = False
 
     def run_local(self, query):
-        ## get conversation history for context
         history = build_context(self.session_id)
-
-        ## save user message
         save_message(self.session_id, "user", query)
-
         self.is_generating = True
         self.stop_flag = False
         start = time.time()
@@ -423,8 +419,20 @@ class LocalMind(App):
             self._add_message_main, "[bold cyan]LocalMind:[/bold cyan] "
         )
 
-        ## build prompt with history
         full_prompt = build_local_prompt(query, history, self.current_model)
+
+        ## Dynamically scale token parameters based on model tiers to keep generation fluid
+        model_lower = self.current_model.lower()
+        if "tinyllama" in model_lower or ":1b" in model_lower:
+            ctx_limit = 2048
+            max_pred = 256
+        elif any(x in model_lower for x in ["3b", "phi", "gemma"]):
+            ctx_limit = 4096  # Scale up context window limits for mid-size architectures
+            max_pred = 512
+        else:
+            ctx_limit = 8192
+            max_pred = 512
+
         try:
             response = requests.post(
                 "http://localhost:11434/api/generate",
@@ -434,13 +442,14 @@ class LocalMind(App):
                     "stream": True,
                     "keep_alive": -1,
                     "options": {
-                        "num_predict": 1024,
+                        "num_predict": max_pred,
                         "temperature": 0.3,
-                        "num_ctx": 2048
+                        "num_ctx": ctx_limit
                     }
                 },
                 stream=True
             )
+            # ... rest of loop execution
 
             for line in response.iter_lines():
                 if self.stop_flag:
