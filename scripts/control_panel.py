@@ -33,10 +33,10 @@ INSTRUCTIONS = {
         "Type numbers separated by commas (e.g. 1,3) or A for all, then Enter."
     ),
     bridge.STEP_SECTION_SELECT: (
-        "This is the scraped content from the selected page.\n"
-        "Select which sections contain the information you need.\n"
-        "Tip: too many sections slows the model and reduces answer quality.\n"
-        "Pick 2–4 focused sections. Type numbers (e.g. 1,3) or A for all, then Enter."
+        "These are all the scraped links, shown as full previews.\n"
+        "Select which link(s) you want the model to generate a response from.\n"
+        "Leave blank and press Enter to SKIP generation entirely.\n"
+        "Type numbers (e.g. 1,3) or A for all, then Enter."
     ),
     bridge.STEP_GENERATING: (
         "The model is generating a response from your selected content.\n"
@@ -289,24 +289,24 @@ class ControlPanel(App):
         elif step == bridge.STEP_SECTION_SELECT:
             site = meta.get("site_title", "")
             if site:
-                lines.append(f"[bold]Page:[/bold] {site}\n\n")
+                lines.append(f"[bold]{site}[/bold]\n\n")
             lines.append(
-                f"[bold]Found {len(data)} section(s) — select which to feed:[/bold]\n\n"
+                f"[bold]Select which link(s) to generate a response from "
+                f"(leave blank to skip generation):[/bold]\n\n"
             )
             for item in data:
-                n       = item["index"]
-                title   = item.get("title", f"Section {n}")
-                words   = item.get("word_count", 0)
-                content = item.get("content", "")
+                n = item["index"]
+                title = item.get("title", f"Link {n}")
+                words = item.get("word_count", 0)
+                preview = item.get("content", "")
                 lines.append(
                     f"  [bold cyan][ {n} ][/bold cyan]  "
                     f"[bold]{title}[/bold]  "
-                    f"[dim]({words} words)[/dim]\n\n"
+                    f"[dim]({words} words)[/dim]\n"
                 )
-                ## show full content, wrapped at ~80 chars
-                if content:
-                    lines.append(f"[#cccccc]{content}[/#cccccc]\n\n")
-                lines.append("[dim]" + "─"*56 + "[/dim]\n\n")
+                if preview:
+                    lines.append(f"        [#888888]{preview}...[/#888888]\n")
+                lines.append("\n")
 
         elif step == bridge.STEP_GENERATING:
             sources = meta.get("sources", [])

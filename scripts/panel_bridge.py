@@ -106,10 +106,14 @@ def clean_all():
             except:
                 pass
 
-def wait_for_result(timeout=120, stop_flag=None, poll=0.3):
-    ## helper — blocks until panel writes a result or timeout
-    ## returns result dict or None
+def prepare_for_result():
+    ## call this BEFORE write_state so result is cleared before user sees the step
+    ## not inside wait_for_result which is called AFTER user may have already answered
     clear_result()
+
+def wait_for_result(timeout=120, stop_flag=None, poll=0.3):
+    ## FIX: do NOT clear result here — it should already be cleared via prepare_for_result
+    ## clearing here was deleting results that arrived before wait_for_result was called
     waited = 0
     while waited < timeout:
         if stop_flag and stop_flag():
