@@ -1,0 +1,15 @@
+name: localmind
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+    - textual>=0.50.0
+    - requests>=2.31.0
+    - beautifulsoup4>=4.12.0
+    - ddgs>=8.1.0
+    - pymongo>=4.17.0
+    - feedparser>=6.0.0
+    - scikit-learn>=1.4.0
