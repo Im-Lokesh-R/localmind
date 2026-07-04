@@ -1,7 +1,7 @@
 ## File Name: panel_bridge.py
 ## Description: Shared communication bridge between LocalMind and Control Panel
 ## Path: scripts/panel_bridge.py
-## Created By: Lokesh R     Created On: 2026-06-16
+## Created By: Lokesh R  and Mareeshwari    Created On: 2026-06-16
 
 import json
 import os

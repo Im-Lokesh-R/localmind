@@ -1,7 +1,7 @@
 ## File Name: control_panel.py
 ## Description: LocalMind Control Panel — Terminal 2 TUI
 ## Path: scripts/control_panel.py
-## Created By: Lokesh R     Created On: 2026-06-16
+## Created By: Mareeshwari     Created On: 2026-06-16
 
 import sys
 import os

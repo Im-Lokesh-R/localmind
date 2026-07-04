@@ -1,7 +1,7 @@
 ## File Name: memory.py
 ## Description: Chat memory using MongoDB
 ## Path: scripts/memory.py
-## Created By: Lokesh R     Created On: 2026-06-02
+## Created By: Tharun     Created On: 2026-06-02
 
 ## Import - Libraries
 from pymongo import MongoClient

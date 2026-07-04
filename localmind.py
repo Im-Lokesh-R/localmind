@@ -1,8 +1,7 @@
 ## File Name: localmind.py
 ## Description: LocalMind TUI - Terminal 1 — lean chat interface
 ## Path: localmind.py
-## Created By: Lokesh R     Created On: 2026-05-25
-## Updated By: Lokesh R     Updated On: 2026-06-16
+## Created By: Mareeshwari and lokesh     Created On: 2026-05-25
 
 import sys
 import os
