@@ -40,6 +40,32 @@ def get_installed_models():
     except:
         return []
 
+def _open_in_new_terminal(cmd):
+    ## open `cmd` in a separate terminal window on Windows / macOS / Linux
+    import shlex, shutil
+    if os.name == "nt":
+        return subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE)
+    cwd = os.path.dirname(os.path.abspath(__file__))
+    line = f"cd {shlex.quote(cwd)} && " + " ".join(shlex.quote(c) for c in cmd)
+    if sys.platform == "darwin":
+        script = line.replace("\\", "\\\\").replace('"', '\\"')
+        return subprocess.Popen([
+            "osascript", "-e",
+            f'tell application "Terminal" to do script "{script}"',
+            "-e", 'tell application "Terminal" to activate',
+        ])
+    candidates = [
+        ("gnome-terminal", ["--", "bash", "-c", line]),
+        ("konsole",        ["-e", "bash", "-c", line]),
+        ("xfce4-terminal", ["-x", "bash", "-c", line]),
+        ("x-terminal-emulator", ["-e", "bash", "-c", line]),
+        ("xterm",          ["-e", "bash", "-c", line]),
+    ]
+    for term, args in candidates:
+        if shutil.which(term):
+            return subprocess.Popen([term] + args)
+    return None
+
 def build_local_prompt(query, history, model):
     m = model.lower()
     if "tinyllama" in m or ":1b" in m:
@@ -154,10 +180,12 @@ class LocalMind(App):
         )
 
         try:
-            self._viewer_proc = subprocess.Popen(
-                [sys.executable, panel_script],
-                creationflags=subprocess.CREATE_NEW_CONSOLE
-            )
+            self._viewer_proc = _open_in_new_terminal([sys.executable, panel_script])
+            if self._viewer_proc is None:
+                self._add_message_main(
+                    "[bold yellow]⚠ No terminal emulator found. Open a second terminal and run:[/bold yellow]\n"
+                    f"  {sys.executable} {panel_script}"
+                )
         except Exception as e:
             self._add_message_main(
                 f"[bold red]⚠ Could not open control panel: {e}[/bold red]"
